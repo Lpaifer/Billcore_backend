@@ -7,8 +7,10 @@ import com.billcore.domain.enums.ProfileType;
 import com.billcore.domain.repository.CategoryRepository;
 import com.billcore.domain.repository.FinancialProfileRepository;
 import com.billcore.domain.repository.UserRepository;
+import com.billcore.domain.service.NotificationService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalDate;
 import java.util.UUID;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -50,6 +52,9 @@ class Sprint1EndpointsTest {
 
     @Autowired
     private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private NotificationService notificationService;
 
     @Test
     void shouldRegisterAndLoginWithEncryptedPassword() throws Exception {
@@ -257,6 +262,158 @@ class Sprint1EndpointsTest {
                 .content(createPaidPayload))
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.status").value("PAID"));
+    }
+
+    @Test
+    void shouldListDueSoonAndHandleNotifications() throws Exception {
+        String email = "us3.user@billcore.dev";
+        String password = "SenhaSegura123";
+
+        registerUser(email, password);
+        String token = loginAndGetToken(email, password);
+
+        String createProfilePayload = """
+            {
+              "name": "Perfil US3",
+              "description": "Perfil para contas a vencer",
+              "profileType": "PERSONAL"
+            }
+            """;
+
+        MvcResult profileResult = mockMvc.perform(post("/api/v1/financial-profiles")
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(createProfilePayload))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        JsonNode profileJson = objectMapper.readTree(profileResult.getResponse().getContentAsString());
+        String profileId = profileJson.get("id").asText();
+        String categoryId = profileJson.get("defaultCategoryId").asText();
+
+        String nearDueDate = LocalDate.now().plusDays(2).toString();
+        String farDueDate = LocalDate.now().plusDays(12).toString();
+
+        String dueSoonPayload = """
+            {
+              "description": "Conta internet",
+              "originalAmount": 120.00,
+              "dueDate": "%s",
+              "categoryId": "%s",
+              "supplierId": null,
+              "issueDate": "2026-04-01",
+              "competenceDate": "2026-04-01",
+              "notes": "US3 due soon"
+            }
+            """.formatted(nearDueDate, categoryId);
+
+        String paidSoonPayload = """
+            {
+              "description": "Conta de servico paga",
+              "originalAmount": 89.00,
+              "dueDate": "%s",
+              "categoryId": "%s",
+              "supplierId": null,
+              "issueDate": "2026-04-01",
+              "competenceDate": "2026-04-01",
+              "notes": "US3 paid",
+              "status": "PAID"
+            }
+            """.formatted(nearDueDate, categoryId);
+
+        String canceledSoonPayload = """
+            {
+              "description": "Conta cancelada",
+              "originalAmount": 39.00,
+              "dueDate": "%s",
+              "categoryId": "%s",
+              "supplierId": null,
+              "issueDate": "2026-04-01",
+              "competenceDate": "2026-04-01",
+              "notes": "US3 canceled"
+            }
+            """.formatted(nearDueDate, categoryId);
+
+        String outsideWindowPayload = """
+            {
+              "description": "Conta anual",
+              "originalAmount": 500.00,
+              "dueDate": "%s",
+              "categoryId": "%s",
+              "supplierId": null,
+              "issueDate": "2026-04-01",
+              "competenceDate": "2026-04-01",
+              "notes": "US3 fora da janela"
+            }
+            """.formatted(farDueDate, categoryId);
+
+        MvcResult dueSoonAccountResult = mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profileId)
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(dueSoonPayload))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        JsonNode dueSoonAccountJson = objectMapper.readTree(dueSoonAccountResult.getResponse().getContentAsString());
+        String dueSoonAccountId = dueSoonAccountJson.get("id").asText();
+
+        mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profileId)
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(paidSoonPayload))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("PAID"));
+
+        MvcResult canceledAccountResult = mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profileId)
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(canceledSoonPayload))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        JsonNode canceledAccountJson = objectMapper.readTree(canceledAccountResult.getResponse().getContentAsString());
+        String canceledAccountId = canceledAccountJson.get("id").asText();
+
+        mockMvc.perform(patch("/api/v1/payable-accounts/{id}/cancel", canceledAccountId)
+                .header("Authorization", "Bearer " + token))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("CANCELED"));
+
+        mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profileId)
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(outsideWindowPayload))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/v1/financial-profiles/{financialProfileId}/payable-accounts/due-soon?daysAhead=7", profileId)
+                .header("Authorization", "Bearer " + token))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].id").value(dueSoonAccountId));
+
+        int generatedFirstRun = notificationService.generateDueAndOverdueNotifications(LocalDate.now(), 7);
+        int generatedSecondRun = notificationService.generateDueAndOverdueNotifications(LocalDate.now(), 7);
+
+        Assertions.assertEquals(1, generatedFirstRun);
+        Assertions.assertEquals(0, generatedSecondRun);
+
+        MvcResult notificationsResult = mockMvc.perform(get("/api/v1/notifications")
+                .header("Authorization", "Bearer " + token))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].notificationType").value("DUE_DATE"))
+            .andExpect(jsonPath("$[0].payableAccountId").value(dueSoonAccountId))
+            .andExpect(jsonPath("$[0].isRead").value(false))
+            .andReturn();
+
+        JsonNode notificationsJson = objectMapper.readTree(notificationsResult.getResponse().getContentAsString());
+        String notificationId = notificationsJson.get(0).get("id").asText();
+
+        mockMvc.perform(patch("/api/v1/notifications/{id}/read", notificationId)
+                .header("Authorization", "Bearer " + token))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(notificationId))
+            .andExpect(jsonPath("$.isRead").value(true));
     }
 
     private void registerUser(String email, String password) throws Exception {

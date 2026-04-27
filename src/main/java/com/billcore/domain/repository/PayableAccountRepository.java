@@ -10,6 +10,14 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface PayableAccountRepository extends JpaRepository<PayableAccount, UUID> {
     List<PayableAccount> findByStatusAndDueDateBefore(PayableAccountStatus status, LocalDate dueDate);
+    List<PayableAccount> findByStatus(PayableAccountStatus status);
+    List<PayableAccount> findByStatusAndDueDateBetween(PayableAccountStatus status, LocalDate startDate, LocalDate endDate);
     List<PayableAccount> findByFinancialProfileId(UUID financialProfileId);
+    List<PayableAccount> findByFinancialProfileIdAndStatusAndDueDateBetween(
+        UUID financialProfileId,
+        PayableAccountStatus status,
+        LocalDate startDate,
+        LocalDate endDate
+    );
     Optional<PayableAccount> findByIdAndFinancialProfileId(UUID id, UUID financialProfileId);
 }

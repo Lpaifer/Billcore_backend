@@ -1,6 +1,7 @@
 package com.billcore.jobs;
 
 import com.billcore.domain.service.PayableAccountLifecycleService;
+import com.billcore.domain.service.NotificationService;
 import java.time.LocalDate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,9 +14,14 @@ public class BillcoreAutomationJobs {
     private static final Logger LOGGER = LoggerFactory.getLogger(BillcoreAutomationJobs.class);
 
     private final PayableAccountLifecycleService payableAccountLifecycleService;
+    private final NotificationService notificationService;
 
-    public BillcoreAutomationJobs(PayableAccountLifecycleService payableAccountLifecycleService) {
+    public BillcoreAutomationJobs(
+        PayableAccountLifecycleService payableAccountLifecycleService,
+        NotificationService notificationService
+    ) {
         this.payableAccountLifecycleService = payableAccountLifecycleService;
+        this.notificationService = notificationService;
     }
 
     @Scheduled(cron = "0 0 1 * * *")
@@ -31,7 +37,7 @@ public class BillcoreAutomationJobs {
 
     @Scheduled(cron = "0 0 8 * * *")
     public void generateDueAndOverdueNotifications() {
-        LOGGER.info("Due and overdue notifications generation job executed.");
+        int generated = notificationService.generateDueAndOverdueNotifications(LocalDate.now(), 7);
+        LOGGER.info("Due and overdue notifications generation job executed. Notifications created: {}", generated);
     }
 }
-
