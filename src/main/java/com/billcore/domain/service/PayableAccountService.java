@@ -12,6 +12,7 @@ import com.billcore.domain.repository.CategoryRepository;
 import com.billcore.domain.repository.FinancialProfileRepository;
 import com.billcore.domain.repository.PayableAccountRepository;
 import com.billcore.domain.repository.SupplierRepository;
+import java.util.Comparator;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -43,14 +44,42 @@ public class PayableAccountService {
         User authenticatedUser,
         UUID financialProfileId,
         PayableAccountStatus status,
+        UUID categoryId,
         LocalDate dueDateFrom,
         LocalDate dueDateTo
     ) {
+        if (dueDateFrom != null && dueDateTo != null && dueDateFrom.isAfter(dueDateTo)) {
+            throw new IllegalArgumentException("dueDateFrom cannot be after dueDateTo");
+        }
+
         FinancialProfile profile = getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
         return payableAccountRepository.findByFinancialProfileId(profile.getId()).stream()
             .filter(account -> status == null || account.getStatus() == status)
+            .filter(account -> categoryId == null || account.getCategory().getId().equals(categoryId))
             .filter(account -> dueDateFrom == null || !account.getDueDate().isBefore(dueDateFrom))
             .filter(account -> dueDateTo == null || !account.getDueDate().isAfter(dueDateTo))
+            .sorted(byDueDateAscending())
+            .map(this::toResponse)
+            .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<PayableAccountResponse> listDueSoon(
+        User authenticatedUser,
+        UUID financialProfileId,
+        int daysAhead
+    ) {
+        FinancialProfile profile = getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
+        LocalDate today = LocalDate.now();
+        LocalDate endDate = today.plusDays(Math.max(0, daysAhead));
+
+        return payableAccountRepository.findByFinancialProfileIdAndStatusAndDueDateBetween(
+                profile.getId(),
+                PayableAccountStatus.PENDING,
+                today,
+                endDate
+            ).stream()
+            .sorted(byDueDateAscending())
             .map(this::toResponse)
             .toList();
     }
@@ -187,5 +216,10 @@ public class PayableAccountService {
             account.getCompetenceDate(),
             account.getCreatedAt()
         );
+    }
+
+    private Comparator<PayableAccount> byDueDateAscending() {
+        return Comparator.comparing(PayableAccount::getDueDate)
+            .thenComparing(PayableAccount::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()));
     }
 }
