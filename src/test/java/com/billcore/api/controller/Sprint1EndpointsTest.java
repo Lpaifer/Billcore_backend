@@ -416,6 +416,114 @@ class Sprint1EndpointsTest {
             .andExpect(jsonPath("$.isRead").value(true));
     }
 
+    @Test
+    void shouldFilterPayableAccountsByStatusCategoryAndDuePeriod() throws Exception {
+        String email = "us5.user@billcore.dev";
+        String password = "SenhaSegura123";
+
+        registerUser(email, password);
+        String token = loginAndGetToken(email, password);
+
+        User owner = userRepository.findByEmail(email).orElseThrow();
+        FinancialProfile profile = new FinancialProfile();
+        profile.setId(UUID.randomUUID());
+        profile.setName("Perfil US5");
+        profile.setProfileType(ProfileType.PERSONAL);
+        profile.setUser(owner);
+        profile.setActive(true);
+        profile = financialProfileRepository.save(profile);
+
+        Category housing = new Category();
+        housing.setId(UUID.randomUUID());
+        housing.setName("Moradia US5");
+        housing.setFinancialProfile(profile);
+        housing.setActive(true);
+        housing = categoryRepository.save(housing);
+
+        Category food = new Category();
+        food.setId(UUID.randomUUID());
+        food.setName("Alimentacao US5");
+        food.setFinancialProfile(profile);
+        food.setActive(true);
+        food = categoryRepository.save(food);
+
+        String createHousingPending = """
+            {
+              "description": "Conta de internet",
+              "originalAmount": 120.00,
+              "dueDate": "2026-05-15",
+              "categoryId": "%s",
+              "supplierId": null,
+              "issueDate": "2026-05-01",
+              "competenceDate": "2026-05-01",
+              "notes": "US5 alvo"
+            }
+            """.formatted(housing.getId());
+
+        String createFoodPending = """
+            {
+              "description": "Supermercado",
+              "originalAmount": 300.00,
+              "dueDate": "2026-05-18",
+              "categoryId": "%s",
+              "supplierId": null,
+              "issueDate": "2026-05-01",
+              "competenceDate": "2026-05-01",
+              "notes": "US5 outra categoria"
+            }
+            """.formatted(food.getId());
+
+        String createHousingPaid = """
+            {
+              "description": "Condominio",
+              "originalAmount": 450.00,
+              "dueDate": "2026-05-20",
+              "categoryId": "%s",
+              "supplierId": null,
+              "issueDate": "2026-05-01",
+              "competenceDate": "2026-05-01",
+              "notes": "US5 pago",
+              "status": "PAID"
+            }
+            """.formatted(housing.getId());
+
+        MvcResult targetResult = mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profile.getId())
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(createHousingPending))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("PENDING"))
+            .andReturn();
+
+        String targetId = objectMapper.readTree(targetResult.getResponse().getContentAsString()).get("id").asText();
+
+        mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profile.getId())
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(createFoodPending))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profile.getId())
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(createHousingPaid))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("PAID"));
+
+        mockMvc.perform(get("/api/v1/financial-profiles/{financialProfileId}/payable-accounts"
+                    + "?status=PENDING&categoryId={categoryId}&dueDateFrom=2026-05-10&dueDateTo=2026-05-16",
+                profile.getId(), housing.getId())
+                .header("Authorization", "Bearer " + token))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].id").value(targetId));
+
+        mockMvc.perform(get("/api/v1/financial-profiles/{financialProfileId}/payable-accounts", profile.getId())
+                .header("Authorization", "Bearer " + token))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(3));
+    }
+
     private void registerUser(String email, String password) throws Exception {
         String payload = """
             {

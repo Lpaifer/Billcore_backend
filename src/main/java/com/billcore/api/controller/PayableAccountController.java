@@ -44,12 +44,13 @@ public class PayableAccountController {
     public List<PayableAccountResponse> list(
         @PathVariable UUID financialProfileId,
         @RequestParam(required = false) PayableAccountStatus status,
+        @RequestParam(required = false) UUID categoryId,
         @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dueDateFrom,
         @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dueDateTo,
         Authentication authentication
     ) {
         User user = authService.getRequiredActiveUserByEmail(authentication.getName());
-        return payableAccountService.list(user, financialProfileId, status, dueDateFrom, dueDateTo);
+        return payableAccountService.list(user, financialProfileId, status, categoryId, dueDateFrom, dueDateTo);
     }
 
     @GetMapping("/financial-profiles/{financialProfileId}/payable-accounts/due-soon")

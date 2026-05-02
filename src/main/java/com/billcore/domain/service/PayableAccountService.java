@@ -44,12 +44,18 @@ public class PayableAccountService {
         User authenticatedUser,
         UUID financialProfileId,
         PayableAccountStatus status,
+        UUID categoryId,
         LocalDate dueDateFrom,
         LocalDate dueDateTo
     ) {
+        if (dueDateFrom != null && dueDateTo != null && dueDateFrom.isAfter(dueDateTo)) {
+            throw new IllegalArgumentException("dueDateFrom cannot be after dueDateTo");
+        }
+
         FinancialProfile profile = getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
         return payableAccountRepository.findByFinancialProfileId(profile.getId()).stream()
             .filter(account -> status == null || account.getStatus() == status)
+            .filter(account -> categoryId == null || account.getCategory().getId().equals(categoryId))
             .filter(account -> dueDateFrom == null || !account.getDueDate().isBefore(dueDateFrom))
             .filter(account -> dueDateTo == null || !account.getDueDate().isAfter(dueDateTo))
             .sorted(byDueDateAscending())
