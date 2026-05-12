@@ -1,15 +1,16 @@
 package com.billcore.domain.service;
 
 import com.billcore.api.dto.notification.NotificationResponse;
+import com.billcore.domain.exception.OwnershipViolationException;
+import com.billcore.domain.exception.ResourceNotFoundException;
 import com.billcore.domain.entity.Notification;
 import com.billcore.domain.entity.PayableAccount;
 import com.billcore.domain.entity.User;
 import com.billcore.domain.enums.NotificationType;
-import com.billcore.domain.enums.PayableAccountStatus;
 import com.billcore.domain.repository.NotificationRepository;
-import com.billcore.domain.repository.PayableAccountRepository;
+import com.billcore.domain.service.notification.NotificationGenerationStrategy;
+import com.billcore.domain.service.notification.NotificationMapper;
 import java.time.LocalDate;
-import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -19,64 +20,61 @@ import org.springframework.transaction.annotation.Transactional;
 public class NotificationService {
 
     private final NotificationRepository notificationRepository;
-    private final PayableAccountRepository payableAccountRepository;
+    private final List<NotificationGenerationStrategy> generationStrategies;
+    private final NotificationMapper notificationMapper;
 
     public NotificationService(
         NotificationRepository notificationRepository,
-        PayableAccountRepository payableAccountRepository
+        List<NotificationGenerationStrategy> generationStrategies,
+        NotificationMapper notificationMapper
     ) {
         this.notificationRepository = notificationRepository;
-        this.payableAccountRepository = payableAccountRepository;
+        this.generationStrategies = generationStrategies;
+        this.notificationMapper = notificationMapper;
     }
 
     @Transactional(readOnly = true)
     public List<NotificationResponse> list(User authenticatedUser) {
         return notificationRepository.findByUserEmailOrderByCreatedAtDesc(authenticatedUser.getEmail()).stream()
-            .map(this::toResponse)
+            .map(notificationMapper::toResponse)
             .toList();
     }
 
     @Transactional
     public NotificationResponse markAsRead(User authenticatedUser, UUID notificationId) {
         Notification notification = notificationRepository.findById(notificationId)
-            .orElseThrow(() -> new IllegalArgumentException("Notification not found"));
+            .orElseThrow(() -> new ResourceNotFoundException("Notification not found"));
 
         if (!notification.getUser().getEmail().equalsIgnoreCase(authenticatedUser.getEmail())) {
-            throw new IllegalArgumentException("Notification does not belong to authenticated user");
+            throw new OwnershipViolationException("Notification does not belong to authenticated user");
         }
 
         notification.markAsRead();
-        return toResponse(notificationRepository.save(notification));
+        return notificationMapper.toResponse(notificationRepository.save(notification));
     }
 
     @Transactional
     public int generateDueAndOverdueNotifications(LocalDate today, int daysAhead) {
         int totalGenerated = 0;
-        totalGenerated += generateDueDateNotifications(today, daysAhead);
-        totalGenerated += generateOverdueNotifications();
+        for (NotificationGenerationStrategy strategy : generationStrategies) {
+            totalGenerated += generateNotificationsForStrategy(strategy, today, daysAhead);
+        }
         return totalGenerated;
     }
 
-    private int generateDueDateNotifications(LocalDate today, int daysAhead) {
-        LocalDate endDate = today.plusDays(Math.max(0, daysAhead));
-        List<PayableAccount> dueSoonAccounts = payableAccountRepository.findByStatusAndDueDateBetween(
-            PayableAccountStatus.PENDING,
-            today,
-            endDate
-        );
-
+    private int generateNotificationsForStrategy(
+        NotificationGenerationStrategy strategy,
+        LocalDate today,
+        int daysAhead
+    ) {
+        List<PayableAccount> accounts = strategy.findCandidateAccounts(today, daysAhead);
         int created = 0;
-        for (PayableAccount account : dueSoonAccounts) {
+        for (PayableAccount account : accounts) {
             User owner = account.getFinancialProfile().getUser();
-            long daysUntilDue = ChronoUnit.DAYS.between(today, account.getDueDate());
-            String title = buildDueTitle(daysUntilDue);
-            String message = "A conta \"" + account.getDescription() + "\" vence em "
-                + account.getDueDate() + ".";
-
             boolean alreadyExists = notificationRepository.existsByUserIdAndPayableAccountIdAndNotificationType(
                 owner.getId(),
                 account.getId(),
-                NotificationType.DUE_DATE
+                strategy.getNotificationType()
             );
 
             if (alreadyExists) {
@@ -84,48 +82,17 @@ public class NotificationService {
             }
 
             notificationRepository.save(
-                buildNotification(owner, account, title, message, NotificationType.DUE_DATE)
+                buildNotification(
+                    owner,
+                    account,
+                    strategy.buildTitle(account, today),
+                    strategy.buildMessage(account, today),
+                    strategy.getNotificationType()
+                )
             );
             created++;
         }
         return created;
-    }
-
-    private int generateOverdueNotifications() {
-        List<PayableAccount> overdueAccounts = payableAccountRepository.findByStatus(PayableAccountStatus.OVERDUE);
-        int created = 0;
-        for (PayableAccount account : overdueAccounts) {
-            User owner = account.getFinancialProfile().getUser();
-            String title = "Conta em atraso";
-            String message = "A conta \"" + account.getDescription() + "\" esta em atraso desde "
-                + account.getDueDate() + ".";
-
-            boolean alreadyExists = notificationRepository.existsByUserIdAndPayableAccountIdAndNotificationType(
-                owner.getId(),
-                account.getId(),
-                NotificationType.OVERDUE
-            );
-
-            if (alreadyExists) {
-                continue;
-            }
-
-            notificationRepository.save(
-                buildNotification(owner, account, title, message, NotificationType.OVERDUE)
-            );
-            created++;
-        }
-        return created;
-    }
-
-    private String buildDueTitle(long daysUntilDue) {
-        if (daysUntilDue <= 0) {
-            return "Conta vence hoje";
-        }
-        if (daysUntilDue == 1) {
-            return "Conta vence amanha";
-        }
-        return "Conta vence em " + daysUntilDue + " dias";
     }
 
     private Notification buildNotification(
@@ -146,15 +113,4 @@ public class NotificationService {
         return notification;
     }
 
-    private NotificationResponse toResponse(Notification notification) {
-        return new NotificationResponse(
-            notification.getId(),
-            notification.getTitle(),
-            notification.getMessage(),
-            notification.getNotificationType(),
-            Boolean.TRUE.equals(notification.getIsRead()),
-            notification.getPayableAccount() == null ? null : notification.getPayableAccount().getId(),
-            notification.getCreatedAt()
-        );
-    }
 }

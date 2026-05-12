@@ -2,6 +2,7 @@ package com.billcore.domain.service;
 
 import com.billcore.api.dto.payable.PayableAccountResponse;
 import com.billcore.api.dto.payable.PayableAccountUpsertRequest;
+import com.billcore.domain.exception.BusinessRuleViolationException;
 import com.billcore.domain.entity.Category;
 import com.billcore.domain.entity.FinancialProfile;
 import com.billcore.domain.entity.PayableAccount;
@@ -9,9 +10,12 @@ import com.billcore.domain.entity.Supplier;
 import com.billcore.domain.entity.User;
 import com.billcore.domain.enums.PayableAccountStatus;
 import com.billcore.domain.repository.CategoryRepository;
-import com.billcore.domain.repository.FinancialProfileRepository;
 import com.billcore.domain.repository.PayableAccountRepository;
 import com.billcore.domain.repository.SupplierRepository;
+import com.billcore.domain.repository.specification.PayableAccountSpecifications;
+import com.billcore.domain.service.payable.PayableAccountMapper;
+import com.billcore.domain.service.payable.PayableAccountOwnershipGuard;
+import com.billcore.domain.service.payable.PayableAccountStatusPolicy;
 import java.util.Comparator;
 import java.time.LocalDate;
 import java.util.List;
@@ -23,20 +27,26 @@ import org.springframework.transaction.annotation.Transactional;
 public class PayableAccountService {
 
     private final PayableAccountRepository payableAccountRepository;
-    private final FinancialProfileRepository financialProfileRepository;
     private final CategoryRepository categoryRepository;
     private final SupplierRepository supplierRepository;
+    private final PayableAccountOwnershipGuard ownershipGuard;
+    private final PayableAccountStatusPolicy statusPolicy;
+    private final PayableAccountMapper mapper;
 
     public PayableAccountService(
         PayableAccountRepository payableAccountRepository,
-        FinancialProfileRepository financialProfileRepository,
         CategoryRepository categoryRepository,
-        SupplierRepository supplierRepository
+        SupplierRepository supplierRepository,
+        PayableAccountOwnershipGuard ownershipGuard,
+        PayableAccountStatusPolicy statusPolicy,
+        PayableAccountMapper mapper
     ) {
         this.payableAccountRepository = payableAccountRepository;
-        this.financialProfileRepository = financialProfileRepository;
         this.categoryRepository = categoryRepository;
         this.supplierRepository = supplierRepository;
+        this.ownershipGuard = ownershipGuard;
+        this.statusPolicy = statusPolicy;
+        this.mapper = mapper;
     }
 
     @Transactional(readOnly = true)
@@ -49,17 +59,21 @@ public class PayableAccountService {
         LocalDate dueDateTo
     ) {
         if (dueDateFrom != null && dueDateTo != null && dueDateFrom.isAfter(dueDateTo)) {
-            throw new IllegalArgumentException("dueDateFrom cannot be after dueDateTo");
+            throw new BusinessRuleViolationException("dueDateFrom cannot be after dueDateTo");
         }
 
-        FinancialProfile profile = getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
-        return payableAccountRepository.findByFinancialProfileId(profile.getId()).stream()
-            .filter(account -> status == null || account.getStatus() == status)
-            .filter(account -> categoryId == null || account.getCategory().getId().equals(categoryId))
-            .filter(account -> dueDateFrom == null || !account.getDueDate().isBefore(dueDateFrom))
-            .filter(account -> dueDateTo == null || !account.getDueDate().isAfter(dueDateTo))
+        FinancialProfile profile = ownershipGuard.getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
+        return payableAccountRepository.findAll(
+                PayableAccountSpecifications.byFilters(
+                    profile.getId(),
+                    status,
+                    categoryId,
+                    dueDateFrom,
+                    dueDateTo
+                )
+            ).stream()
             .sorted(byDueDateAscending())
-            .map(this::toResponse)
+            .map(mapper::toResponse)
             .toList();
     }
 
@@ -69,7 +83,7 @@ public class PayableAccountService {
         UUID financialProfileId,
         int daysAhead
     ) {
-        FinancialProfile profile = getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
+        FinancialProfile profile = ownershipGuard.getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
         LocalDate today = LocalDate.now();
         LocalDate endDate = today.plusDays(Math.max(0, daysAhead));
 
@@ -80,7 +94,7 @@ public class PayableAccountService {
                 endDate
             ).stream()
             .sorted(byDueDateAscending())
-            .map(this::toResponse)
+            .map(mapper::toResponse)
             .toList();
     }
 
@@ -90,9 +104,9 @@ public class PayableAccountService {
         UUID financialProfileId,
         PayableAccountUpsertRequest request
     ) {
-        FinancialProfile profile = getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
+        FinancialProfile profile = ownershipGuard.getOwnedProfile(financialProfileId, authenticatedUser.getEmail());
         Category category = categoryRepository.findByIdAndFinancialProfileId(request.categoryId(), profile.getId())
-            .orElseThrow(() -> new IllegalArgumentException("Category not found for financial profile"));
+            .orElseThrow(() -> new BusinessRuleViolationException("Category not found for financial profile"));
         Supplier supplier = resolveSupplier(profile.getId(), request.supplierId());
 
         PayableAccount account = new PayableAccount();
@@ -107,10 +121,10 @@ public class PayableAccountService {
         account.setNotes(request.notes());
         account.setIssueDate(request.issueDate());
         account.setCompetenceDate(request.competenceDate());
-        applyCreateStatus(account, request.status());
+        statusPolicy.applyCreateStatus(account, request.status());
 
         PayableAccount saved = payableAccountRepository.save(account);
-        return toResponse(saved);
+        return mapper.toResponse(saved);
     }
 
     @Transactional
@@ -119,13 +133,13 @@ public class PayableAccountService {
         UUID payableAccountId,
         PayableAccountUpsertRequest request
     ) {
-        PayableAccount account = getOwnedAccount(payableAccountId, authenticatedUser.getEmail());
+        PayableAccount account = ownershipGuard.getOwnedAccount(payableAccountId, authenticatedUser.getEmail());
 
         Category category = categoryRepository.findByIdAndFinancialProfileId(
                 request.categoryId(),
                 account.getFinancialProfile().getId()
             )
-            .orElseThrow(() -> new IllegalArgumentException("Category not found for financial profile"));
+            .orElseThrow(() -> new BusinessRuleViolationException("Category not found for financial profile"));
         Supplier supplier = resolveSupplier(account.getFinancialProfile().getId(), request.supplierId());
 
         account.setDescription(request.description().trim());
@@ -136,36 +150,22 @@ public class PayableAccountService {
         account.setNotes(request.notes());
         account.setIssueDate(request.issueDate());
         account.setCompetenceDate(request.competenceDate());
-        applyUpdateStatus(account, request.status());
+        statusPolicy.applyUpdateStatus(account, request.status());
 
-        return toResponse(payableAccountRepository.save(account));
+        return mapper.toResponse(payableAccountRepository.save(account));
     }
 
     @Transactional
     public void delete(User authenticatedUser, UUID payableAccountId) {
-        PayableAccount account = getOwnedAccount(payableAccountId, authenticatedUser.getEmail());
+        PayableAccount account = ownershipGuard.getOwnedAccount(payableAccountId, authenticatedUser.getEmail());
         payableAccountRepository.delete(account);
     }
 
     @Transactional
     public PayableAccountResponse cancel(User authenticatedUser, UUID payableAccountId) {
-        PayableAccount account = getOwnedAccount(payableAccountId, authenticatedUser.getEmail());
+        PayableAccount account = ownershipGuard.getOwnedAccount(payableAccountId, authenticatedUser.getEmail());
         account.cancel();
-        return toResponse(payableAccountRepository.save(account));
-    }
-
-    private FinancialProfile getOwnedProfile(UUID financialProfileId, String userEmail) {
-        return financialProfileRepository.findByIdAndUserEmail(financialProfileId, userEmail)
-            .orElseThrow(() -> new IllegalArgumentException("Financial profile not found for authenticated user"));
-    }
-
-    private PayableAccount getOwnedAccount(UUID payableAccountId, String userEmail) {
-        PayableAccount account = payableAccountRepository.findById(payableAccountId)
-            .orElseThrow(() -> new IllegalArgumentException("Payable account not found"));
-        if (!account.getFinancialProfile().getUser().getEmail().equalsIgnoreCase(userEmail)) {
-            throw new IllegalArgumentException("Payable account does not belong to authenticated user");
-        }
-        return account;
+        return mapper.toResponse(payableAccountRepository.save(account));
     }
 
     private Supplier resolveSupplier(UUID financialProfileId, UUID supplierId) {
@@ -173,49 +173,7 @@ public class PayableAccountService {
             return null;
         }
         return supplierRepository.findByIdAndFinancialProfileId(supplierId, financialProfileId)
-            .orElseThrow(() -> new IllegalArgumentException("Supplier not found for financial profile"));
-    }
-
-    private void applyCreateStatus(PayableAccount account, PayableAccountStatus requestedStatus) {
-        if (requestedStatus == null || requestedStatus == PayableAccountStatus.PENDING) {
-            return;
-        }
-        if (requestedStatus == PayableAccountStatus.PAID) {
-            account.markAsPaid();
-            return;
-        }
-        throw new IllegalArgumentException("Only PENDING or PAID are allowed on account creation");
-    }
-
-    private void applyUpdateStatus(PayableAccount account, PayableAccountStatus requestedStatus) {
-        if (requestedStatus == null || requestedStatus == account.getStatus()) {
-            return;
-        }
-
-        switch (requestedStatus) {
-            case PAID -> account.markAsPaid();
-            case OVERDUE -> account.markAsOverdue();
-            case CANCELED -> account.cancel();
-            case PENDING -> throw new IllegalArgumentException("Reverting account status to PENDING is not allowed");
-            default -> throw new IllegalArgumentException("Unsupported account status update");
-        }
-    }
-
-    private PayableAccountResponse toResponse(PayableAccount account) {
-        return new PayableAccountResponse(
-            account.getId(),
-            account.getDescription(),
-            account.getOriginalAmount(),
-            account.getDueDate(),
-            account.getStatus(),
-            account.getNotes(),
-            account.getFinancialProfile().getId(),
-            account.getCategory().getId(),
-            account.getSupplier() == null ? null : account.getSupplier().getId(),
-            account.getIssueDate(),
-            account.getCompetenceDate(),
-            account.getCreatedAt()
-        );
+            .orElseThrow(() -> new BusinessRuleViolationException("Supplier not found for financial profile"));
     }
 
     private Comparator<PayableAccount> byDueDateAscending() {

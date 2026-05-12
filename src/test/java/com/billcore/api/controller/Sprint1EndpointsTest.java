@@ -20,6 +20,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -33,6 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 class Sprint1EndpointsTest {
 
     @Autowired
@@ -522,6 +524,52 @@ class Sprint1EndpointsTest {
                 .header("Authorization", "Bearer " + token))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.length()").value(3));
+    }
+
+    @Test
+    void shouldCreateAndPreventDuplicateCategoriesPerProfile() throws Exception {
+        String email = "category.user@billcore.dev";
+        String password = "SenhaSegura123";
+
+        registerUser(email, password);
+        String token = loginAndGetToken(email, password);
+
+        String createProfilePayload = """
+            {
+              "name": "Perfil Categorias",
+              "description": "Profile para teste de categorias",
+              "profileType": "PERSONAL"
+            }
+            """;
+
+        MvcResult profileResult = mockMvc.perform(post("/api/v1/financial-profiles")
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(createProfilePayload))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        String profileId = objectMapper.readTree(profileResult.getResponse().getContentAsString()).get("id").asText();
+
+        String createCategoryPayload = """
+            {
+              "name": "Transporte"
+            }
+            """;
+
+        mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/categories", profileId)
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(createCategoryPayload))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.name").value("Transporte"));
+
+        mockMvc.perform(post("/api/v1/financial-profiles/{financialProfileId}/categories", profileId)
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(createCategoryPayload))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error").value("BUSINESS_RULE_ERROR"));
     }
 
     private void registerUser(String email, String password) throws Exception {

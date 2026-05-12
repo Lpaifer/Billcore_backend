@@ -7,8 +7,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
-public interface PayableAccountRepository extends JpaRepository<PayableAccount, UUID> {
+public interface PayableAccountRepository extends JpaRepository<PayableAccount, UUID>, JpaSpecificationExecutor<PayableAccount> {
     List<PayableAccount> findByStatusAndDueDateBefore(PayableAccountStatus status, LocalDate dueDate);
     List<PayableAccount> findByStatus(PayableAccountStatus status);
     List<PayableAccount> findByStatusAndDueDateBetween(PayableAccountStatus status, LocalDate startDate, LocalDate endDate);

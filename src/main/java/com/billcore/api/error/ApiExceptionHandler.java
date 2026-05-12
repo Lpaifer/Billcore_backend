@@ -1,7 +1,9 @@
 package com.billcore.api.error;
 
+import com.billcore.domain.exception.DomainException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -31,6 +33,14 @@ public class ApiExceptionHandler {
         return buildError(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_ERROR", ex.getMessage(), request.getRequestURI());
     }
 
+    @ExceptionHandler(DomainException.class)
+    public ResponseEntity<ApiErrorResponse> handleDomainException(
+        DomainException ex,
+        HttpServletRequest request
+    ) {
+        return buildError(HttpStatus.BAD_REQUEST, "BUSINESS_RULE_ERROR", ex.getMessage(), request.getRequestURI());
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiErrorResponse> handleIllegalArgument(
         IllegalArgumentException ex,
@@ -45,6 +55,19 @@ public class ApiExceptionHandler {
         HttpServletRequest request
     ) {
         return buildError(HttpStatus.BAD_REQUEST, "BUSINESS_RULE_ERROR", ex.getMessage(), request.getRequestURI());
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(
+        DataIntegrityViolationException ex,
+        HttpServletRequest request
+    ) {
+        String message = "Operation violates a data integrity rule";
+        String rawMessage = ex.getMostSpecificCause() == null ? ex.getMessage() : ex.getMostSpecificCause().getMessage();
+        if (rawMessage != null && rawMessage.toLowerCase().contains("uk_category_name_profile")) {
+            message = "Category name already exists for this financial profile";
+        }
+        return buildError(HttpStatus.BAD_REQUEST, "BUSINESS_RULE_ERROR", message, request.getRequestURI());
     }
 
     @ExceptionHandler(Exception.class)
@@ -67,4 +90,3 @@ public class ApiExceptionHandler {
         );
     }
 }
-
