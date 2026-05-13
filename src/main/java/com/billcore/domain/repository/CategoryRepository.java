@@ -10,4 +10,6 @@ public interface CategoryRepository extends JpaRepository<Category, UUID> {
     Optional<Category> findByIdAndFinancialProfileId(UUID id, UUID financialProfileId);
 
     List<Category> findByFinancialProfileIdOrderByCreatedAtAsc(UUID financialProfileId);
+
+    boolean existsByFinancialProfileIdAndNameIgnoreCase(UUID financialProfileId, String name);
 }
